@@ -1,42 +1,72 @@
 const WebSocket = require("ws");
 
 const PORT = process.env.PORT || 10000;
-
-// Create WebSocket server
 const wss = new WebSocket.Server({ port: PORT });
 
 console.log(`WebSocket server running on port ${PORT}`);
 
-// Store connected clients
-const clients = new Set();
+// deviceId → { socket, deviceName, lastSeen }
+const devices = new Map();
 
 wss.on("connection", (ws) => {
-  console.log("Client connected");
-  clients.add(ws);
+  console.log("NEW CONNECTION");
 
   ws.on("message", (message) => {
     try {
       const data = JSON.parse(message.toString());
 
-      // Broadcast received packet to all other clients
-      for (const client of clients) {
-        if (client !== ws && client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify(data));
+      // 1️⃣ Device handshake
+      if (data.type === "HELLO") {
+        const { deviceId, deviceName } = data;
+
+        devices.set(deviceId, {
+          socket: ws,
+          deviceName,
+          lastSeen: Date.now()
+        });
+
+        ws.deviceId = deviceId;
+
+        console.log("DEVICE CONNECTED");
+        console.log("ID:", deviceId);
+        console.log("NAME:", deviceName);
+        console.log("TOTAL DEVICES:", devices.size);
+        return;
+      }
+
+      // 2️⃣ Heartbeat
+      if (data.type === "PING") {
+        if (ws.deviceId && devices.has(ws.deviceId)) {
+          devices.get(ws.deviceId).lastSeen = Date.now();
+        }
+        return;
+      }
+
+      // 3️⃣ Broadcast packets
+      for (const [id, device] of devices) {
+        if (
+          device.socket !== ws &&
+          device.socket.readyState === WebSocket.OPEN
+        ) {
+          device.socket.send(JSON.stringify(data));
         }
       }
+
     } catch (err) {
-      console.error("Invalid JSON received:", err.message);
+      console.error("Invalid JSON:", err.message);
     }
   });
 
   ws.on("close", () => {
-    console.log("Client disconnected");
-    clients.delete(ws);
+    if (ws.deviceId) {
+      devices.delete(ws.deviceId);
+      console.log("DEVICE DISCONNECTED:", ws.deviceId);
+    }
   });
 
-  ws.on("error", (err) => {
-    console.error("WebSocket error:", err.message);
-    clients.delete(ws);
+  ws.on("error", () => {
+    if (ws.deviceId) {
+      devices.delete(ws.deviceId);
+    }
   });
 });
-
